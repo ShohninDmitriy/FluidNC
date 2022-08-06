@@ -6,11 +6,12 @@
 bool spi_init_bus(pinnum_t sck_pin, pinnum_t miso_pin, pinnum_t mosi_pin);
 void spi_deinit_bus();
 
-typedef int spi_device_t;
+typedef void* spidev_t;
 
-// Returns devid or -1
-spi_device_t spi_register_device(pinnum_t cs_pin);
+// Returns devid or NULL
+spidev_t spi_register_device(pinnum_t cs_pin, uint8_t mode, int hz);
+void     spi_unregister_device(spidev_t devid);
 
-void spi_unregister_device(spi_device_t devid);
-
-bool spi_transfer(spi_device_t busid, uint8_t* outbuf, uint8_t* inbuf, size_t len);
+bool spi_transfer(spidev_t devid, uint8_t* outbuf, uint8_t* inbuf, size_t len);
+bool spi_receive(spidev_t devid, uint8_t dummybits, uint8_t* inbuf, size_t inbits);
+bool spi_send_cmd_addr(spidev_t devid, uint16_t cmd, uint8_t cmdbits, uint32_t addr, uint8_t addrbits, uint8_t dummybits);

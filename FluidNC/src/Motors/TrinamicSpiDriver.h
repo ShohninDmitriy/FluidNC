@@ -7,6 +7,8 @@
 #include "../Pin.h"
 #include "../PinMapper.h"
 
+#include "Driver/spi.h"
+
 #include <cstdint>
 
 const int NORMAL_TCOOLTHRS = 0xFFFFF;  // 20 bit is max
@@ -23,31 +25,7 @@ namespace MotorDrivers {
         //bool         set_homing_mode(bool ishoming) override;
 
         // Configuration handlers:
-        void afterParse() override {
-            if (!_spi_setup_done) {
-                if (daisy_chain_cs_id == 255) {
-                    // Either it is not a daisy chain or this is the first daisy-chained TMC in the config file
-                    Assert(_cs_pin.defined(), "TMC cs_pin: pin must be configured");
-                    if (_spi_index != -1) {
-                        // This is the first daisy-chained TMC in the config file
-                        // Do the cs pin mapping now and record the ID in daisy_chain_cs_id
-                        _cs_pin.setAttr(Pin::Attr::Output | Pin::Attr::InitialOn);
-                        _cs_mapping       = PinMapper(_cs_pin);
-                        daisy_chain_cs_id = _cs_mapping.pinId();
-                        set_bitnum(spi_index_mask, _spi_index);
-                    } else {
-                        // The TMC SPI is not daisy-chained
-                    }
-                } else {
-                    // This is another - not the first - daisy-chained TMC
-                    Assert(_cs_pin.undefined(), "For daisy-chained TMC, cs_pin: pin must be configured only once");
-                    Assert(_spi_index != -1, "spi_index: must be configured on all daisy-chained TMCs");
-                    Assert(bitnum_is_false(spi_index_mask, _spi_index), "spi_index: must be unique among all daisy-chained TMCs");
-                    set_bitnum(spi_index_mask, _spi_index);
-                }
-            }
-            _spi_setup_done = true;
-        }
+        void afterParse() override;
 
         void validate() const override { StandardStepper::validate(); }
 
@@ -66,9 +44,8 @@ namespace MotorDrivers {
 
     protected:
         Pin       _cs_pin;  // The chip select pin (can be the same for daisy chain)
-        int32_t   _spi_index      = -1;
-        const int _spi_freq       = 100000;
-        bool      _spi_setup_done = false;
+        int32_t   _spi_index = -1;
+        const int _spi_freq  = 100000;
 
         void config_message() override;
 
@@ -78,14 +55,69 @@ namespace MotorDrivers {
         bool    reportTest(uint8_t result);
         uint8_t toffValue();
 
+        spidev_t _spi_devid;
+
     private:
-        static pinnum_t daisy_chain_cs_id;
-        static uint8_t  spi_index_mask;
+        static pinnum_t _daisy_chain_cs_id;
+        static spidev_t _daisy_chain_spi_devid;
+        static uint8_t  _spi_index_mask;
+        static uint8_t  _spi_index_max;
 
         PinMapper _cs_mapping;
 
         void trinamic_test_response();
         void trinamic_stepper_enable(bool enable);
+
+        void     spi_first(uint8_t cmd, uint32_t data);
+        void     spi_write(uint8_t reg, uint32_t data);
+        uint32_t spi_read(uint8_t reg);
     };
 
-}
+};
+
+// The following lets us replace TMCStepper's use of the Arduino SPI class
+// with our own driver that is based on platform-level APIs.  TMC2130Stepper
+// defines virtual methods read() and write() to access the SPI bus.  We
+// create a TMC2130Spi class that derives from TMC2130Stepper with our own
+// overrides of its read() and write() methods.
+
+void     tmc_spi_send(spidev_t devid, uint8_t reg, uint32_t data, int index);
+uint32_t tmc_spi_receive(spidev_t devid, int index, int max_index);
+void     tmc_spi_write(spidev_t devid, uint8_t reg, uint32_t data, int index);
+uint32_t tmc_spi_read(spidev_t devid, uint8_t reg, int index, int max_index);
+
+class TMC2130Spi : public TMC2130Stepper {
+    spidev_t _spi_devid;
+
+public:
+    TMC2130Spi(uint8_t cs_id, float r_sense, int32_t spi_index, spidev_t spi_devid) :
+        TMC2130Stepper(cs_id, r_sense, spi_index), _spi_devid(spi_devid) {}
+
+    // XXX we should just avoid calling this and set the speed when we init the spidev
+    void setSPISpeed(uint32_t speed) {}
+
+protected:
+    void     write(uint8_t reg, uint32_t data) override { tmc_spi_write(_spi_devid, reg, data, link_index); }
+    uint32_t read(uint8_t reg) override { return tmc_spi_read(_spi_devid, reg, link_index, chain_length); };
+    // TMC2130Stepper::begin() calls pinMode(_pinCS, OUTPUT); and switchCSpin(HIGH);
+    // The pinMode call is not weak, but it is weak in Arduino
+    void switchCSpin(bool state) {}
+};
+
+// TMC5160Stepper derives from TMC2130Stepper directly, without going through
+// our TMC2130Spi, so we must duplicate the overrides.
+
+class TMC5160Spi : public TMC5160Stepper {
+    spidev_t _spi_devid;
+
+public:
+    TMC5160Spi(uint8_t cs_id, float r_sense, int32_t spi_index, spidev_t spi_devid) :
+        TMC5160Stepper(cs_id, r_sense, spi_index), _spi_devid(spi_devid) {}
+
+    void setSPISpeed(uint32_t speed) {}
+
+protected:
+    void     write(uint8_t reg, uint32_t data) override { tmc_spi_write(_spi_devid, reg, data, link_index); }
+    uint32_t read(uint8_t reg) override { return tmc_spi_read(_spi_devid, reg, link_index, chain_length); }
+    void     switchCSpin(bool state) {}
+};

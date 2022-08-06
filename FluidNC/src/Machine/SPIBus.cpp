@@ -34,7 +34,7 @@ namespace Machine {
             }
             log_info("Using default SPI pins");
         }
-        if (!spi_init_bus(sckPin, misoPin, mosiPin)) {
+        if (spi_init_bus(sckPin, misoPin, mosiPin)) {
             log_error("SPIBus init failed");
             return;
         }
